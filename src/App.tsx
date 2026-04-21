@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, createContext, useContext } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   Users, 
@@ -35,9 +35,84 @@ import {
   ShieldAlert,
   Sprout,
   Map as MapIcon,
-  Search as SearchIcon
+  Search as SearchIcon,
+  LogOut,
+  LogIn
 } from "lucide-react";
 import { mapSkillsToProblems } from "./services/gemini";
+import { auth, db, handleFirestoreError } from "./lib/firebase";
+import { 
+  onAuthStateChanged, 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  signOut, 
+  User 
+} from "firebase/auth";
+import { 
+  collection, 
+  addDoc, 
+  updateDoc, 
+  doc, 
+  getDoc, 
+  getDocs, 
+  query, 
+  where, 
+  orderBy, 
+  limit, 
+  serverTimestamp, 
+  onSnapshot 
+} from "firebase/firestore";
+
+// --- Context ---
+interface AuthContextType {
+  user: User | null;
+  loading: boolean;
+  signIn: () => Promise<void>;
+  logout: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextType | null>(null);
+
+const AuthProvider = ({ children }: { children: React.ReactNode }) => {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    return onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoading(false);
+    });
+  }, []);
+
+  const signIn = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error("Sign in failed", error);
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Sign out failed", error);
+    }
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, loading, signIn, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) throw new Error("useAuth must be used within AuthProvider");
+  return context;
+};
 
 // --- Types ---
 type Screen = "landing" | "dashboard" | "post-problem" | "directory" | "registration" | "skill-mapping" | "profile" | "ngo-directory";
@@ -71,6 +146,7 @@ const MOCK_VOLUNTEERS = [
 
 const Navbar = ({ active, setScreen }: { active: Screen; setScreen: (s: Screen) => void }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const { user, signIn, logout, loading } = useAuth();
   
   const navItems: { label: string; value: Screen }[] = [
     { label: "Dashboard", value: "dashboard" },
@@ -112,26 +188,39 @@ const Navbar = ({ active, setScreen }: { active: Screen; setScreen: (s: Screen) 
 
         {/* Action Icons (Visible on all screens) */}
         <div className="flex items-center gap-2 md:gap-4 ml-auto md:ml-0 md:pl-6 md:border-l border-border h-8">
-          <button className="p-2 text-text-light hover:text-primary transition-colors relative">
-            <Bell size={20} />
-            <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-secondary rounded-full border-2 border-white"></span>
-          </button>
-          <button className="p-2 text-text-light hover:text-primary transition-colors">
-            <Settings size={20} />
-          </button>
-          <button 
-            onClick={() => setScreen("profile")}
-            className={`w-8 h-8 md:w-10 md:h-10 rounded-full border-2 overflow-hidden transition-all ${
-              active === "profile" ? "border-primary shadow-md" : "border-transparent hover:border-primary/50"
-            }`}
-          >
-            <img 
-              src="https://api.dicebear.com/7.x/avataaars/svg?seed=Sarah" 
-              alt="Profile" 
-              className="w-full h-full object-cover bg-bento-bg" 
-              referrerPolicy="no-referrer"
-            />
-          </button>
+          {user ? (
+            <>
+              <button className="p-2 text-text-light hover:text-primary transition-colors relative">
+                <Bell size={20} />
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-secondary rounded-full border-2 border-white"></span>
+              </button>
+              <button className="p-2 text-text-light hover:text-primary transition-colors" onClick={logout} title="Sign Out">
+                <LogOut size={20} />
+              </button>
+              <button 
+                onClick={() => setScreen("profile")}
+                className={`w-8 h-8 md:w-10 md:h-10 rounded-full border-2 overflow-hidden transition-all ${
+                  active === "profile" ? "border-primary shadow-md" : "border-transparent hover:border-primary/50"
+                }`}
+              >
+                <img 
+                  src={user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.email}`} 
+                  alt="Profile" 
+                  className="w-full h-full object-cover bg-bento-bg" 
+                  referrerPolicy="no-referrer"
+                />
+              </button>
+            </>
+          ) : (
+            <button 
+              onClick={signIn}
+              disabled={loading}
+              className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-xl text-xs font-bold hover:bg-[#0b7a6f] transition-all"
+            >
+              <LogIn size={16} />
+              {loading ? "..." : "Sign In"}
+            </button>
+          )}
         </div>
 
         {/* Mobile Toggle */}
@@ -243,106 +332,191 @@ const LandingScreen = ({ setScreen }: { setScreen: (s: Screen) => void }) => (
 );
 
 const DashboardScreen = ({ setScreen }: { setScreen: (s: Screen) => void }) => {
+  const { user } = useAuth();
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [volunteers, setVolunteers] = useState<any[]>([]);
+
+  useEffect(() => {
+    // Fetch real tasks from Firestore
+    const qTasks = query(collection(db, "problems"), orderBy("submittedAt", "desc"), limit(5));
+    const unsubscribeTasks = onSnapshot(qTasks, (snapshot) => {
+      const taskList = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as any[];
+      setTasks(taskList.length > 0 ? taskList.map(t => ({
+        id: t.id,
+        title: t.description.slice(0, 30) + '...',
+        ngo: "Reported Need",
+        location: t.locationName,
+        category: t.category,
+        urgency: t.urgency,
+        volunteersNeeded: 1
+      })) : MOCK_TASKS);
+    });
+
+    // Fetch real volunteers
+    const qVols = query(collection(db, "volunteers"), limit(4));
+    const unsubscribeVols = onSnapshot(qVols, (snapshot) => {
+      const volList = snapshot.docs.map(doc => doc.data());
+      setVolunteers(volList.length > 0 ? volList : MOCK_VOLUNTEERS);
+    });
+
+    return () => {
+      unsubscribeTasks();
+      unsubscribeVols();
+    };
+  }, []);
+
   return (
-    <div className="max-w-7xl mx-auto px-6 py-12">
-      <div className="grid grid-cols-1 md:grid-cols-4 md:grid-rows-3 gap-6 min-h-[800px]">
-        {/* 1. Hero / Branding Box */}
-        <div className="md:col-span-2 md:row-span-1 bg-gradient-to-br from-primary to-[#115E59] rounded-2xl p-8 text-white flex flex-col justify-center border border-border/10 shadow-lg">
-          <p className="font-bold uppercase text-[10px] tracking-widest opacity-80 mb-3">Community Hub: South India</p>
-          <h2 className="text-3xl md:text-4xl font-extrabold leading-tight mb-4">Uniting 500+ NGOs with skilled experts.</h2>
-          <p className="text-sm opacity-90 max-w-md">Empowering local communities through structured volunteer support and real-time resource sharing.</p>
+    <div className="max-w-7xl mx-auto px-6 py-12 space-y-12">
+      {/* 1. Refined Header */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 pb-8 border-b border-border">
+        <div className="space-y-1">
+          <p className="text-[10px] font-black uppercase tracking-[0.3em] text-primary">Community Hub: India</p>
+          <h2 className="text-4xl font-extrabold text-[#153448]">Network Overview</h2>
         </div>
-
-        {/* 2. Active Tasks (Task List) */}
-        <div className="md:col-span-1 md:row-span-3 bg-white border border-border rounded-2xl p-6 flex flex-col shadow-sm">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="text-xs font-bold uppercase tracking-widest text-text-light">Active Tasks</h3>
-            <span className="pill-urgent">High Priority</span>
+        <div className="flex gap-4">
+          <div className="text-right">
+            <p className="text-[10px] font-bold uppercase text-slate-400 tracking-widest">Active Experts</p>
+            <p className="text-2xl font-black text-[#153448]">1,248</p>
           </div>
-          <div className="space-y-4 overflow-y-auto pr-2 max-h-[400px]">
-            {MOCK_TASKS.map((task, idx) => (
-              <div 
-                key={task.id} 
-                className="flex items-center gap-3 py-3 border-b border-border last:border-0 cursor-pointer group"
-                onClick={() => setScreen("dashboard")}
-              >
-                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-xs shrink-0 ${
-                  idx === 0 ? 'bg-secondary' : idx === 1 ? 'bg-primary' : 'bg-accent'
-                }`}>
-                  {task.ngo.split(' ').map(n => n[0]).join('')}
-                </div>
-                <div className="min-w-0">
-                  <div className="text-sm font-bold truncate group-hover:text-primary transition-colors">{task.title}</div>
-                  <div className="text-[10px] text-text-light truncate">{task.ngo} • {task.location}</div>
-                </div>
+          <div className="w-px h-10 bg-border md:block hidden" />
+          <div className="text-right">
+            <p className="text-[10px] font-bold uppercase text-slate-400 tracking-widest">Ongoing Mission</p>
+            <p className="text-2xl font-black text-[#153448]">42</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        {/* Left Column: Skill Mapping & Hero */}
+        <div className="lg:col-span-8 space-y-8">
+          {/* Main Action Card */}
+          <div className="bg-[#F8FBFF] border border-[#D0E5FF] rounded-[2.5rem] p-10 flex flex-col md:flex-row items-center gap-10 shadow-sm">
+            <div className="flex-1 space-y-6">
+              <h3 className="text-3xl font-extrabold text-[#153448] leading-tight">Empowering 500+ NGOs with expert intelligence.</h3>
+              <p className="text-slate-500 text-sm leading-relaxed">
+                Connect with verified professionals across technology, healthcare, and legal sectors to accelerate social impact.
+              </p>
+              <div className="flex gap-4">
+                <button 
+                  onClick={() => setScreen("registration")}
+                  className="px-6 py-3 bg-primary text-white text-xs font-black uppercase tracking-widest rounded-xl hover:shadow-lg transition-all"
+                >
+                  Join the Network
+                </button>
+                <button 
+                  onClick={() => setScreen("directory")}
+                  className="px-6 py-3 bg-white border border-border text-xs font-black uppercase tracking-widest rounded-xl hover:bg-slate-50 transition-all"
+                >
+                  Browse Experts
+                </button>
               </div>
-            ))}
+            </div>
+            <div className="w-full md:w-64 h-64 bg-white rounded-[2rem] border border-[#D0E5FF] flex items-center justify-center p-8 shadow-inner">
+               <div className="relative">
+                 <div className="w-32 h-32 bg-primary/10 rounded-full flex items-center justify-center animate-pulse">
+                   <Heart size={48} className="text-primary" fill="currentColor" />
+                 </div>
+                 <div className="absolute -top-2 -right-2 w-8 h-8 bg-secondary rounded-full flex items-center justify-center text-white shadow-lg">
+                   <Sparkles size={16} />
+                 </div>
+               </div>
+            </div>
           </div>
-          <button 
-            onClick={() => setScreen("dashboard")}
-            className="mt-auto pt-6 text-xs font-bold text-primary flex items-center justify-center gap-1 hover:underline"
-          >
-            Explore All Tasks <ChevronRight size={14} />
-          </button>
+
+          {/* Skill Analysis (Re-designed for Minimalism) */}
+          <div className="bg-white border border-border rounded-[2rem] p-10 space-y-8 shadow-sm">
+            <div className="flex justify-between items-center">
+              <h3 className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Skill Distribution Analysis</h3>
+              <button 
+                onClick={() => setScreen("skill-mapping")}
+                className="flex items-center gap-2 text-[10px] font-bold text-primary hover:underline uppercase tracking-widest"
+              >
+                AI Deep Dive <Sparkles size={12} />
+              </button>
+            </div>
+            
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
+              {[
+                { label: "Technology", val: "42%", icon: <Monitor size={18} />, color: "text-blue-600" },
+                { label: "Healthcare", val: "28%", icon: <Activity size={18} />, color: "text-emerald-600" },
+                { label: "Legal Aid", val: "15%", icon: <Scale size={18} />, color: "text-amber-600" },
+                { label: "Operations", val: "10%", icon: <Database size={18} />, color: "text-slate-600" },
+                { label: "Finance", val: "3%", icon: <IndianRupee size={18} />, color: "text-rose-600" },
+                { label: "Community", val: "2%", icon: <Users size={18} />, color: "text-indigo-600" },
+              ].map(item => (
+                <div key={item.label} className="p-6 rounded-2xl bg-slate-50 border border-slate-100 group hover:border-primary/20 transition-all">
+                  <div className={`${item.color} mb-3 opacity-60 group-hover:opacity-100 transition-opacity`}>
+                    {item.icon}
+                  </div>
+                  <div className="text-2xl font-black text-[#153448]">{item.val}</div>
+                  <div className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">{item.label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
-        {/* 3. Volunteer Map (Top Volunteers) */}
-        <div className="md:col-span-1 md:row-span-3 bg-white border border-border rounded-2xl p-6 flex flex-col shadow-sm">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="text-xs font-bold uppercase tracking-widest text-text-light">Top Volunteers</h3>
-            <button onClick={() => setScreen("directory")} className="text-[10px] font-bold text-primary hover:underline">View All</button>
-          </div>
-          <div className="space-y-4 overflow-y-auto max-h-[350px] pr-1 pb-2">
-            {MOCK_VOLUNTEERS.map(v => (
-              <div key={v.name} className="flex items-center gap-3 py-3 border-b border-border last:border-0 hover:bg-bento-bg/50 rounded-lg px-2 transition-colors">
-                <div className="w-10 h-10 rounded-full bg-slate-200 border border-border flex items-center justify-center shrink-0 overflow-hidden shadow-sm">
-                   <img src={v.avatar} alt={v.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                </div>
-                <div className="min-w-0">
-                  <div className="text-sm font-bold truncate">{v.name}</div>
-                  <div className="flex items-center gap-1.5 mt-0.5">
-                    <span className="pill-skill truncate max-w-[80px]">{v.skills[0]}</span>
-                    <span className={`text-[9px] font-bold uppercase tracking-tighter ${
-                      v.workCondition === 'Remote' ? 'text-primary' : v.workCondition === 'Hybrid' ? 'text-secondary' : 'text-accent'
-                    }`}>
-                      • {v.workCondition}
-                    </span>
+        {/* Right Column: Dynamic Feeds */}
+        <div className="lg:col-span-4 space-y-6">
+          {/* Priority Tasks */}
+          <div className="bg-white border border-border rounded-[2.5rem] p-8 shadow-sm space-y-8">
+            <div className="flex justify-between items-center">
+              <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Urgent Missions</h3>
+              <span className="px-3 py-1 bg-rose-50 text-rose-500 text-[10px] font-bold rounded-full border border-rose-100">Live</span>
+            </div>
+            
+            <div className="space-y-6">
+              {tasks.slice(0, 3).map((task) => (
+                <div key={task.id} className="group cursor-pointer">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-[10px] font-bold text-primary uppercase tracking-widest">{task.category}</span>
+                    <span className="text-[9px] font-black text-slate-300">{task.urgency}</span>
+                  </div>
+                  <h4 className="text-sm font-bold text-[#153448] group-hover:text-primary transition-colors leading-snug">{task.title}</h4>
+                  <div className="flex items-center gap-2 mt-2 opacity-60">
+                    <MapPin size={10} />
+                    <span className="text-[10px] font-medium">{task.location}</span>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
-          <div className="mt-auto pt-4 border-t border-dashed border-border text-center">
-            <p className="text-[10px] text-text-light uppercase tracking-widest mb-1">Active Experts near you</p>
-            <div className="text-2xl font-extrabold text-text-dark">1,248</div>
-          </div>
-        </div>
-
-        {/* 4. Skill Mapping (Skill Grid) */}
-        <div className="md:col-span-2 md:row-span-2 bg-white border border-border rounded-2xl p-6 shadow-sm overflow-hidden flex flex-col">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="text-xs font-bold uppercase tracking-widest text-text-light">Skill Distribution Mapping</h3>
-            <button onClick={() => setScreen("skill-mapping")} className="text-[10px] font-bold text-accent flex items-center gap-1">
-              AI Analysis <Sparkles size={10} />
+              ))}
+            </div>
+            
+            <button className="w-full py-4 bg-slate-50 border border-slate-100 rounded-xl text-xs font-black text-slate-500 hover:bg-slate-100 transition-all uppercase tracking-widest">
+              View Problem Board
             </button>
           </div>
-          <div className="grid grid-cols-3 gap-3 flex-1">
-            {[
-              { label: "Technology", val: "42%", icon: <Monitor size={16} /> },
-              { label: "Health", val: "28%", icon: <Activity size={16} /> },
-              { label: "Legal Aid", val: "15%", icon: <Scale size={16} /> },
-              { label: "Ops", val: "10%", icon: <Database size={16} /> },
-              { label: "Finance", val: "3%", icon: <IndianRupee size={16} /> },
-              { label: "Other", val: "2%", icon: <MoreHorizontal size={16} /> },
-            ].map(item => (
-              <div key={item.label} className="bg-bento-bg border border-border p-3 rounded-xl text-center flex flex-col items-center justify-center hover:border-primary transition-colors cursor-default group/skill">
-                <div className="text-text-light mb-1 group-hover/skill:text-primary transition-colors">
-                  {item.icon}
+
+          {/* Expert Highlight */}
+          <div className="bg-[#153448] text-white rounded-[2.5rem] p-8 shadow-lg space-y-8">
+            <div className="space-y-1">
+              <h3 className="text-secondary font-black text-[10px] uppercase tracking-[0.2em]">Weekly Spotlight</h3>
+              <p className="text-sm font-bold opacity-80">Meet our top contributing experts.</p>
+            </div>
+            
+            <div className="space-y-4">
+              {volunteers.slice(0, 2).map(v => (
+                <div key={v.name} className="flex items-center gap-4 p-3 rounded-2xl bg-white/5 border border-white/5 hover:bg-white/10 transition-all">
+                  <div className="w-12 h-12 rounded-full overflow-hidden border border-white/10 bg-slate-800">
+                    <img src={v.avatar} alt={v.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold truncate">{v.name}</p>
+                    <p className="text-[10px] font-medium opacity-50 truncate">{v.skills[0]} • {v.location}</p>
+                  </div>
+                  <ChevronRight size={16} className="opacity-30" />
                 </div>
-                <span className="text-lg font-extrabold text-primary">{item.val}</span>
-                <label className="text-[9px] text-text-light font-bold uppercase truncate">{item.label}</label>
-              </div>
-            ))}
+              ))}
+            </div>
+            
+            <button 
+              onClick={() => setScreen("directory")}
+              className="w-full py-4 bg-secondary text-white font-black text-[10px] rounded-2xl hover:brightness-110 transition-all uppercase tracking-[0.2em]"
+            >
+              See All Volunteers
+            </button>
           </div>
         </div>
       </div>
@@ -351,6 +525,7 @@ const DashboardScreen = ({ setScreen }: { setScreen: (s: Screen) => void }) => {
 };
 
 const PostProblemScreen = () => {
+  const { user } = useAuth();
   const [submitted, setSubmitted] = useState(false);
   const [formData, setFormData] = useState({
     description: "",
@@ -358,10 +533,23 @@ const PostProblemScreen = () => {
     locationName: "",
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSubmitted(true);
-    setTimeout(() => setSubmitted(false), 3000);
+    if (!user) return alert("Please sign in first!");
+    
+    try {
+      await addDoc(collection(db, "problems"), {
+        ...formData,
+        status: "UNASSIGNED",
+        submittedById: user.uid,
+        submittedAt: serverTimestamp(),
+      });
+      setSubmitted(true);
+      setFormData({ description: "", urgency: "Medium", locationName: "" });
+      setTimeout(() => setSubmitted(false), 3000);
+    } catch (error) {
+      handleFirestoreError(error, 'create', 'problems');
+    }
   };
 
   const recentSubmissions = [
@@ -680,8 +868,9 @@ const SkillMappingScreen = () => {
 };
 
 const ProfileScreen = () => {
+  const { user } = useAuth();
   const [profile, setProfile] = useState({
-    name: "Sarah Jenkins",
+    name: user?.displayName || "Sarah Jenkins",
     location: "Portland, Oregon",
     availability: "15 hrs/week",
     skills: ["UI/UX Design", "React", "Public Speaking"],
@@ -690,10 +879,37 @@ const ProfileScreen = () => {
   });
   const [isEditing, setIsEditing] = useState(false);
   const [newSkill, setNewSkill] = useState("");
+  const [docId, setDocId] = useState<string | null>(null);
 
-  const handleUpdate = (e: React.FormEvent) => {
+  useEffect(() => {
+    if (user) {
+      const q = query(collection(db, "volunteers"), where("uid", "==", user.uid), limit(1));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        if (!snapshot.empty) {
+          const d = snapshot.docs[0];
+          setProfile(d.data() as any);
+          setDocId(d.id);
+        }
+      });
+      return unsubscribe;
+    }
+  }, [user]);
+
+  const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsEditing(false);
+    if (!docId) return;
+    try {
+      await updateDoc(doc(db, "volunteers", docId), {
+        name: profile.name,
+        location: profile.location,
+        availability: profile.availability,
+        bio: profile.bio,
+        skills: profile.skills
+      });
+      setIsEditing(false);
+    } catch (error) {
+      handleFirestoreError(error, 'update', `volunteers/${docId}`);
+    }
   };
 
   const addSkill = () => {
@@ -851,6 +1067,7 @@ const ProfileScreen = () => {
 };
 
 const NGORegistrationScreen = ({ onComplete }: { onComplete?: () => void }) => {
+  const { user } = useAuth();
   const [formData, setFormData] = useState({
     name: "",
     regId: "",
@@ -891,9 +1108,21 @@ const NGORegistrationScreen = ({ onComplete }: { onComplete?: () => void }) => {
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSubmitted(true);
+    if (!user) return alert("Please sign in first!");
+
+    try {
+      await addDoc(collection(db, "ngos"), {
+        ...formData,
+        status: "PENDING",
+        submittedById: user.uid,
+        createdAt: serverTimestamp(),
+      });
+      setSubmitted(true);
+    } catch (error) {
+      handleFirestoreError(error, 'create', 'ngos');
+    }
   };
 
   if (submitted) {
@@ -1224,6 +1453,30 @@ const RegistrationScreen = ({ setScreen }: { setScreen: (s: Screen) => void }) =
   }
 
   if (choice === 'volunteer') {
+    const { user } = useAuth();
+    const [vData, setVData] = useState({ name: user?.displayName || "", location: "", skills: "", commitment: "5-10 hrs/week" });
+
+    const finishVolunteerReg = async () => {
+      if (!user) return alert("Please sign in first!");
+      try {
+        await addDoc(collection(db, "volunteers"), {
+          name: vData.name,
+          uid: user.uid,
+          location: vData.location,
+          availability: vData.commitment,
+          skills: vData.skills.split(',').map(s => s.trim()),
+          verified: false,
+          bio: "Just joined the network!",
+          avatar: user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.email}`,
+          workCondition: "Remote",
+          createdAt: serverTimestamp()
+        });
+        setScreen("profile");
+      } catch (error) {
+        handleFirestoreError(error, 'create', 'volunteers');
+      }
+    };
+
     return (
       <div className="relative">
         <button 
@@ -1242,22 +1495,44 @@ const RegistrationScreen = ({ setScreen }: { setScreen: (s: Screen) => void }) =
             <div className="grid md:grid-cols-2 gap-6">
               <div className="space-y-1">
                 <label className="text-[10px] font-bold uppercase text-slate-400 pl-1">Full Name</label>
-                <input type="text" placeholder="Aarav Sharma" className="w-full p-4 bg-bento-bg rounded-xl border border-border focus:ring-1 focus:ring-primary outline-none" />
+                <input 
+                  type="text" 
+                  placeholder="Aarav Sharma" 
+                  className="w-full p-4 bg-bento-bg rounded-xl border border-border focus:ring-1 focus:ring-primary outline-none" 
+                  value={vData.name}
+                  onChange={e => setVData({...vData, name: e.target.value})}
+                />
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold uppercase text-slate-400 pl-1">Location</label>
-                <input type="text" placeholder="Pune, Maharashtra" className="w-full p-4 bg-bento-bg rounded-xl border border-border focus:ring-1 focus:ring-primary outline-none" />
+                <input 
+                  type="text" 
+                  placeholder="Pune, Maharashtra" 
+                  className="w-full p-4 bg-bento-bg rounded-xl border border-border focus:ring-1 focus:ring-primary outline-none" 
+                  value={vData.location}
+                  onChange={e => setVData({...vData, location: e.target.value})}
+                />
               </div>
             </div>
             
             <div className="space-y-1">
-              <label className="text-[10px] font-bold uppercase text-slate-400 pl-1">Core Expert Skills</label>
-              <input type="text" placeholder="e.g. Content Strategy, UI Design, Legal Research" className="w-full p-4 bg-bento-bg rounded-xl border border-border focus:ring-1 focus:ring-primary outline-none" />
+              <label className="text-[10px] font-bold uppercase text-slate-400 pl-1">Core Expert Skills (comma separated)</label>
+              <input 
+                type="text" 
+                placeholder="e.g. Content Strategy, UI Design, Legal Research" 
+                className="w-full p-4 bg-bento-bg rounded-xl border border-border focus:ring-1 focus:ring-primary outline-none" 
+                value={vData.skills}
+                onChange={e => setVData({...vData, skills: e.target.value})}
+              />
             </div>
 
             <div className="space-y-1">
               <label className="text-[10px] font-bold uppercase text-slate-400 pl-1">Weekly Commitment</label>
-              <select className="w-full p-4 bg-bento-bg rounded-xl border border-border focus:ring-1 focus:ring-primary outline-none">
+              <select 
+                className="w-full p-4 bg-bento-bg rounded-xl border border-border focus:ring-1 focus:ring-primary outline-none"
+                value={vData.commitment}
+                onChange={e => setVData({...vData, commitment: e.target.value})}
+              >
                 <option>5-10 hrs/week</option>
                 <option>10-20 hrs/week</option>
                 <option>Full Priority (Flexible)</option>
@@ -1265,7 +1540,7 @@ const RegistrationScreen = ({ setScreen }: { setScreen: (s: Screen) => void }) =
             </div>
 
             <button 
-               onClick={() => setScreen("profile")}
+               onClick={finishVolunteerReg}
                className="w-full py-5 bg-[#0D2B4D] text-white font-extrabold text-lg rounded-2xl shadow-xl shadow-[#0D2B4D]/20 hover:bg-[#0A233D] transition-all"
             >
               Finish Registration
@@ -1329,7 +1604,10 @@ const RegistrationScreen = ({ setScreen }: { setScreen: (s: Screen) => void }) =
 };
 
 const NGODirectoryScreen = () => {
-  const ngos = [
+  const [ngos, setNgos] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const MOCK_NGOS = [
     {
       name: "Akshaya Patra Foundation",
       status: "Verified",
@@ -1353,32 +1631,33 @@ const NGODirectoryScreen = () => {
       tags: ["Environment", "Sprout"],
       icon: <Sprout className="text-green-600" />,
       color: "bg-green-100"
-    },
-    {
-      name: "Swayam Sikhya",
-      status: "Verified",
-      location: "Goregaon East, Mumbai",
-      tags: ["Education", "Empowerment"],
-      icon: <GraduationCap className="text-indigo-600" />,
-      color: "bg-indigo-100"
-    },
-    {
-      name: "Goonj Foundation",
-      status: "Active",
-      location: "Madanpur Khadar, New Delhi",
-      tags: ["Disaster Relief", "Rural Dev"],
-      icon: <ShieldAlert className="text-rose-600" />,
-      color: "bg-rose-100"
-    },
-    {
-      name: "Smile Foundation",
-      status: "Verified",
-      location: "Andheri West, Mumbai",
-      tags: ["Child Rights", "Health"],
-      icon: <Heart className="text-red-500" />,
-      color: "bg-red-50"
     }
   ];
+
+  useEffect(() => {
+    const q = query(collection(db, "ngos"), limit(20));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const list = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as any[];
+      
+      const combined = [
+        ...list.map(n => ({
+          name: n.name,
+          status: n.status === 'PENDING' ? 'Reviewing' : 'Verified',
+          location: n.cityState,
+          tags: n.focusAreas,
+          icon: <Building2 className="text-primary" />,
+          color: "bg-primary/5"
+        })),
+        ...MOCK_NGOS
+      ];
+      setNgos(combined);
+      setLoading(false);
+    });
+    return unsubscribe;
+  }, []);
 
   return (
     <div className="min-h-screen bg-white">
@@ -1477,8 +1756,89 @@ const NGODirectoryScreen = () => {
   );
 };
 
+const VolunteerDirectoryScreen = () => {
+  const [volunteers, setVolunteers] = useState<any[]>([]);
+
+  useEffect(() => {
+    const q = query(collection(db, "volunteers"), limit(20));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const list = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as any[];
+      setVolunteers(list.length > 0 ? list : MOCK_VOLUNTEERS);
+    });
+    return unsubscribe;
+  }, []);
+
+  return (
+    <div className="max-w-7xl mx-auto px-6 py-12 space-y-12">
+      <div className="text-center space-y-4">
+        <div className="inline-flex p-4 bg-primary/10 rounded-3xl text-primary mb-2">
+          <Users size={40} />
+        </div>
+        <h2 className="text-4xl font-extrabold text-[#153448] uppercase tracking-tighter">Expert Directory</h2>
+        <p className="text-slate-500 max-w-2xl mx-auto leading-relaxed">Connecting NGOs with verified experts across India. Browse by domain, location, or working preference.</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+        {volunteers.map((v, i) => (
+          <motion.div 
+            key={i} 
+            whileHover={{ y: -8 }}
+            className="bg-white p-8 rounded-[2rem] border border-border shadow-sm hover:shadow-2xl transition-all relative overflow-hidden group"
+          >
+            <div className="absolute top-0 right-0 p-4">
+              <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full ${
+                v.workCondition === 'Remote' ? 'bg-primary/10 text-primary' : v.workCondition === 'Hybrid' ? 'bg-secondary/10 text-secondary' : 'bg-accent/10 text-accent'
+              }`}>
+                {v.workCondition}
+              </span>
+            </div>
+
+            <div className="flex flex-col items-center text-center">
+              <div className="w-24 h-24 rounded-full border-4 border-slate-50 overflow-hidden mb-6 shadow-lg group-hover:border-primary/20 transition-colors">
+                <img src={v.avatar} alt={v.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+              </div>
+              <h3 className="font-extrabold text-xl mb-1 text-[#153448] group-hover:text-primary transition-colors">{v.name}</h3>
+              <div className="flex items-center gap-1.5 text-slate-400 text-xs font-bold uppercase tracking-wider mb-6">
+                <MapPin size={12} className="text-primary" />
+                {v.location}
+              </div>
+              
+              <div className="w-full border-t border-slate-100 pt-6 mt-2">
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4">Core Competencies</p>
+                <div className="flex flex-wrap justify-center gap-2">
+                  {v.skills.slice(0, 3).map((s: string) => (
+                    <span key={s} className="px-3 py-1.5 bg-slate-50 rounded-xl text-[10px] font-extrabold text-slate-800 border border-slate-100 shadow-sm">
+                      {s}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <button className="mt-8 w-full py-3 bg-slate-50 text-primary font-bold text-sm rounded-xl hover:bg-primary hover:text-white transition-all">
+                Contact Expert
+              </button>
+            </div>
+          </motion.div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  );
+}
+
+function AppContent() {
   const [screen, setScreen] = useState<Screen>("landing");
+  const { user } = useAuth();
 
   // Scroll to top on screen change
   useEffect(() => {
@@ -1500,68 +1860,12 @@ export default function App() {
           >
             {screen === "landing" && <LandingScreen setScreen={setScreen} />}
             {screen === "dashboard" && <DashboardScreen setScreen={setScreen} />}
+            {screen === "directory" && <VolunteerDirectoryScreen />}
             {screen === "post-problem" && <PostProblemScreen />}
             {screen === "skill-mapping" && <SkillMappingScreen />}
             {screen === "profile" && <ProfileScreen />}
             {screen === "ngo-directory" && <NGODirectoryScreen />}
             
-            {/* Simple fallbacks for directory for now */}
-            {screen === "directory" && (
-              <div className="max-w-6xl mx-auto p-12 space-y-12">
-                <div className="text-center space-y-4">
-                  <div className="inline-flex p-4 bg-primary/10 rounded-3xl text-primary mb-2">
-                    <Users size={40} />
-                  </div>
-                  <h2 className="text-4xl font-extrabold text-text-dark">Volunteer Expert Directory</h2>
-                  <p className="text-text-light max-w-2xl mx-auto">Connecting NGOs with verified experts across India. Browse by domain, location, or working preference.</p>
-                </div>
-                
-                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-8">
-                  {MOCK_VOLUNTEERS.map(v => (
-                    <motion.div 
-                      key={v.name} 
-                      whileHover={{ y: -8 }}
-                      className="bg-white p-8 rounded-3xl border border-border shadow-sm hover:shadow-xl transition-all relative overflow-hidden group"
-                    >
-                      <div className="absolute top-0 right-0 p-4">
-                        <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full ${
-                          v.workCondition === 'Remote' ? 'bg-primary/10 text-primary' : v.workCondition === 'Hybrid' ? 'bg-secondary/10 text-secondary' : 'bg-accent/10 text-accent'
-                        }`}>
-                          {v.workCondition}
-                        </span>
-                      </div>
-
-                      <div className="flex flex-col items-center text-center">
-                        <div className="w-24 h-24 rounded-full border-4 border-bento-bg overflow-hidden mb-6 shadow-lg group-hover:border-primary/20 transition-colors">
-                          <img src={v.avatar} alt={v.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                        </div>
-                        <h3 className="font-extrabold text-xl mb-1 text-text-dark group-hover:text-primary transition-colors">{v.name}</h3>
-                        <div className="flex items-center gap-1.5 text-text-light text-xs font-bold uppercase tracking-wider mb-6">
-                          <MapPin size={12} className="text-primary" />
-                          {v.location}
-                        </div>
-                        
-                        <div className="w-full border-t border-border pt-6 mt-2">
-                          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4">Core Competencies</p>
-                          <div className="flex flex-wrap justify-center gap-2">
-                            {v.skills.slice(0, 3).map(s => (
-                              <span key={s} className="px-3 py-1.5 bg-bento-bg rounded-xl text-[10px] font-extrabold text-text-dark border border-border shadow-sm">
-                                {s}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-
-                        <button className="mt-8 w-full py-3 bg-bento-bg text-primary font-bold text-sm rounded-xl hover:bg-primary hover:text-white transition-all">
-                          Contact Expert
-                        </button>
-                      </div>
-                    </motion.div>
-                  ))}
-                </div>
-              </div>
-            )}
-
             {screen === "registration" && <RegistrationScreen setScreen={setScreen} />}
           </motion.div>
         </AnimatePresence>

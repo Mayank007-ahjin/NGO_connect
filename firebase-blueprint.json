@@ -1,0 +1,75 @@
+{
+  "entities": {
+    "NGO": {
+      "title": "NGO Organization",
+      "description": "Details of a registered NGO organization",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Legal name of the NGO" },
+        "regId": { "type": "string", "description": "Optional Registration ID (80G/12A)" },
+        "yearEstablished": { "type": "string", "description": "Year the NGO was established" },
+        "address": { "type": "string", "description": "Full formal address" },
+        "cityState": { "type": "string", "description": "City and State location" },
+        "pinCode": { "type": "string", "description": "6-digit PIN code" },
+        "focusAreas": { "type": "array", "items": { "type": "string" }, "description": "Domains of impact" },
+        "volunteersCount": { "type": "string", "description": "Current volunteer headcount" },
+        "availability": { "type": "string", "description": "NGO operational availability type" },
+        "operatingHours": { "type": "string", "description": "Standard working hours" },
+        "phone": { "type": "string", "description": "Primary contact number" },
+        "email": { "type": "string", "description": "Primary contact email" },
+        "description": { "type": "string", "description": "Mission statement and description" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["PENDING", "VERIFIED", "REJECTED"] },
+        "submittedById": { "type": "string", "description": "Firebase UID of searching user" }
+      },
+      "required": ["name", "address", "cityState", "pinCode", "phone", "email", "description"]
+    },
+    "Volunteer": {
+      "title": "Volunteer Expert",
+      "description": "Profile of a skilled volunteer",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "location": { "type": "string" },
+        "availability": { "type": "string" },
+        "skills": { "type": "array", "items": { "type": "string" } },
+        "bio": { "type": "string" },
+        "workCondition": { "type": "string", "enum": ["Remote", "Hybrid", "On-site"] },
+        "avatar": { "type": "string" },
+        "verified": { "type": "boolean" },
+        "uid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "location", "uid"]
+    },
+    "Problem": {
+      "title": "Community Need",
+      "description": "A reported community problem or need",
+      "type": "object",
+      "properties": {
+        "description": { "type": "string" },
+        "urgency": { "type": "string", "enum": ["Low", "Medium", "High"] },
+        "locationName": { "type": "string" },
+        "category": { "type": "string" },
+        "status": { "type": "string", "enum": ["UNASSIGNED", "ASSIGNED", "IN REVIEW", "COMPLETED"] },
+        "submittedById": { "type": "string" },
+        "submittedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["description", "urgency", "locationName", "submittedById"]
+    }
+  },
+  "firestore": {
+    "ngos/{ngoId}": {
+      "schema": "NGO",
+      "description": "Registered organizations"
+    },
+    "volunteers/{volunteerId}": {
+      "schema": "Volunteer",
+      "description": "Volunteer profiles"
+    },
+    "problems/{problemId}": {
+      "schema": "Problem",
+      "description": "Community needs and reported issues"
+    }
+  }
+}
