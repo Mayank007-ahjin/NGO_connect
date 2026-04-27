@@ -1,0 +1,92 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() { return request.auth != null; }
+    function isVerifiedUser() { return isSignedIn() && request.auth.token.email_verified == true; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isAdmin() { return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)); }
+
+    // --- NGO Rules ---
+    match /ngos/{ngoId} {
+      function isValidNGO(data) {
+        return data.name is string && data.name.size() <= 200 &&
+               data.email is string && data.email.size() <= 128 &&
+               data.phone is string && data.phone.size() <= 20 &&
+               data.description is string && data.description.size() <= 2000 &&
+               data.submittedById == request.auth.uid;
+      }
+
+      allow get: if isSignedIn();
+      allow list: if isSignedIn() && resource.data.submittedById == request.auth.uid;
+      
+      allow create: if isVerifiedUser() && 
+                      isValidId(ngoId) && 
+                      isValidNGO(incoming()) &&
+                      incoming().status == 'PENDING' &&
+                      incoming().createdAt == request.time;
+      
+      allow update: if isVerifiedUser() && isValidNGO(incoming()) && (
+                      (incoming().submittedById == existing().submittedById && 
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['name', 'address', 'cityState', 'pinCode', 'focusAreas', 'volunteersCount', 'availability', 'operatingHours', 'phone', 'email', 'description']))
+                      || isAdmin()
+                    );
+    }
+
+    // --- Volunteer Rules ---
+    match /volunteers/{volunteerId} {
+      function isValidVolunteer(data) {
+        return data.name is string && data.name.size() <= 100 &&
+               data.uid == request.auth.uid;
+      }
+
+      allow get: if isSignedIn();
+      allow list: if isSignedIn(); // Directory is public for signed in users
+      
+      allow create: if isVerifiedUser() && 
+                      isValidId(volunteerId) && 
+                      isValidVolunteer(incoming()) &&
+                      incoming().uid == request.auth.uid &&
+                      incoming().createdAt == request.time;
+      
+      allow update: if isVerifiedUser() && 
+                      incoming().uid == existing().uid &&
+                      incoming().diff(existing()).affectedKeys().hasOnly(['name', 'location', 'availability', 'skills', 'bio', 'workCondition', 'avatar']) &&
+                      isValidVolunteer(incoming());
+    }
+
+    // --- Problem Rules ---
+    match /problems/{problemId} {
+      function isValidProblem(data) {
+        return data.description is string && data.description.size() <= 1000 &&
+               data.locationName is string && data.locationName.size() <= 200 &&
+               data.submittedById == request.auth.uid;
+      }
+
+      allow read: if isSignedIn();
+      
+      allow create: if isVerifiedUser() && 
+                      isValidId(problemId) && 
+                      isValidProblem(incoming()) &&
+                      incoming().status == 'UNASSIGNED' &&
+                      incoming().submittedAt == request.time;
+      
+      allow update: if isVerifiedUser() && 
+                      incoming().submittedById == existing().submittedById &&
+                      (
+                        (incoming().diff(existing()).affectedKeys().hasOnly(['description', 'urgency', 'locationName', 'category'])) ||
+                        isAdmin()
+                      );
+      
+      allow delete: if isAdmin();
+    }
+  }
+}

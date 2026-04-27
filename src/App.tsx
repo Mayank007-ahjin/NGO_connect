@@ -13,6 +13,7 @@ import {
   Sparkles,
   CheckCircle2,
   ChevronRight,
+  ChevronLeft,
   Menu,
   X,
   Edit,
@@ -1758,6 +1759,7 @@ const NGODirectoryScreen = () => {
 
 const VolunteerDirectoryScreen = () => {
   const [volunteers, setVolunteers] = useState<any[]>([]);
+  const [page, setPage] = useState(0);
 
   useEffect(() => {
     const q = query(collection(db, "volunteers"), limit(20));
@@ -1771,58 +1773,101 @@ const VolunteerDirectoryScreen = () => {
     return unsubscribe;
   }, []);
 
+  const itemsPerPage = 4;
+  const totalPages = Math.ceil(volunteers.length / itemsPerPage);
+
   return (
-    <div className="max-w-7xl mx-auto px-6 py-12 space-y-12">
-      <div className="text-center space-y-4">
-        <div className="inline-flex p-4 bg-primary/10 rounded-3xl text-primary mb-2">
-          <Users size={40} />
+    <div className="max-w-7xl mx-auto px-6 py-12 space-y-12 overflow-hidden">
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div className="space-y-4 text-center md:text-left">
+          <div className="inline-flex p-4 bg-primary/10 rounded-3xl text-primary mb-2">
+            <Users size={40} />
+          </div>
+          <h2 className="text-4xl font-extrabold text-[#153448] uppercase tracking-tighter">Expert Directory</h2>
+          <p className="text-slate-500 max-w-2xl leading-relaxed">Browse active volunteers and specialists contributing to high-impact missions across the network.</p>
         </div>
-        <h2 className="text-4xl font-extrabold text-[#153448] uppercase tracking-tighter">Expert Directory</h2>
-        <p className="text-slate-500 max-w-2xl mx-auto leading-relaxed">Connecting NGOs with verified experts across India. Browse by domain, location, or working preference.</p>
+        
+        <div className="flex gap-2 justify-center">
+          <button 
+            onClick={() => setPage(p => Math.max(0, p - 1))}
+            disabled={page === 0}
+            className="p-3 rounded-full border border-border hover:bg-slate-50 transition-colors disabled:opacity-20 disabled:cursor-not-allowed"
+          >
+            <ChevronLeft size={24} className="text-text-dark" />
+          </button>
+          <button 
+            onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+            disabled={page === totalPages - 1}
+            className="p-3 rounded-full border border-border hover:bg-slate-50 transition-colors disabled:opacity-20 disabled:cursor-not-allowed"
+          >
+            <ChevronRight size={24} className="text-text-dark" />
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-        {volunteers.map((v, i) => (
-          <motion.div 
-            key={i} 
-            whileHover={{ y: -8 }}
-            className="bg-white p-8 rounded-[2rem] border border-border shadow-sm hover:shadow-2xl transition-all relative overflow-hidden group"
-          >
-            <div className="absolute top-0 right-0 p-4">
-              <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full ${
-                v.workCondition === 'Remote' ? 'bg-primary/10 text-primary' : v.workCondition === 'Hybrid' ? 'bg-secondary/10 text-secondary' : 'bg-accent/10 text-accent'
-              }`}>
-                {v.workCondition}
-              </span>
-            </div>
-
-            <div className="flex flex-col items-center text-center">
-              <div className="w-24 h-24 rounded-full border-4 border-slate-50 overflow-hidden mb-6 shadow-lg group-hover:border-primary/20 transition-colors">
-                <img src={v.avatar} alt={v.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-              </div>
-              <h3 className="font-extrabold text-xl mb-1 text-[#153448] group-hover:text-primary transition-colors">{v.name}</h3>
-              <div className="flex items-center gap-1.5 text-slate-400 text-xs font-bold uppercase tracking-wider mb-6">
-                <MapPin size={12} className="text-primary" />
-                {v.location}
-              </div>
-              
-              <div className="w-full border-t border-slate-100 pt-6 mt-2">
-                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4">Core Competencies</p>
-                <div className="flex flex-wrap justify-center gap-2">
-                  {v.skills.slice(0, 3).map((s: string) => (
-                    <span key={s} className="px-3 py-1.5 bg-slate-50 rounded-xl text-[10px] font-extrabold text-slate-800 border border-slate-100 shadow-sm">
-                      {s}
+      <div className="relative">
+        <motion.div 
+          className="flex"
+          animate={{ x: `-${page * 100}%` }}
+          transition={{ type: "spring", damping: 25, stiffness: 120 }}
+        >
+          {Array.from({ length: totalPages }).map((_, slideIdx) => (
+            <div key={slideIdx} className="w-full flex-shrink-0 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 px-1">
+              {volunteers.slice(slideIdx * itemsPerPage, (slideIdx + 1) * itemsPerPage).map((v, i) => (
+                <motion.div 
+                  key={v.id || i} 
+                  whileHover={{ y: -8 }}
+                  className="bg-white p-8 rounded-[2rem] border border-border shadow-sm hover:shadow-2xl transition-all relative overflow-hidden group flex flex-col"
+                >
+                  <div className="absolute top-0 right-0 p-4">
+                    <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full ${
+                      v.workCondition === 'Remote' ? 'bg-primary/10 text-primary' : v.workCondition === 'Hybrid' ? 'bg-secondary/10 text-secondary' : 'bg-accent/10 text-accent'
+                    }`}>
+                      {v.workCondition}
                     </span>
-                  ))}
-                </div>
-              </div>
+                  </div>
 
-              <button className="mt-8 w-full py-3 bg-slate-50 text-primary font-bold text-sm rounded-xl hover:bg-primary hover:text-white transition-all">
-                Contact Expert
-              </button>
+                  <div className="flex flex-col items-center text-center flex-1">
+                    <div className="w-24 h-24 rounded-full border-4 border-slate-50 overflow-hidden mb-6 shadow-lg group-hover:border-primary/20 transition-colors">
+                      <img src={v.avatar} alt={v.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                    </div>
+                    <h3 className="font-extrabold text-xl mb-1 text-[#153448] group-hover:text-primary transition-colors line-clamp-1">{v.name}</h3>
+                    <div className="flex items-center gap-1.5 text-slate-400 text-xs font-bold uppercase tracking-wider mb-6">
+                      <MapPin size={12} className="text-primary" />
+                      {v.location}
+                    </div>
+                    
+                    <div className="w-full border-t border-slate-100 pt-6 mt-auto">
+                      <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4">Core Competencies</p>
+                      <div className="flex flex-wrap justify-center gap-2">
+                        {v.skills?.slice(0, 3).map((s: string) => (
+                          <span key={s} className="px-3 py-1.5 bg-slate-50 rounded-xl text-[10px] font-extrabold text-slate-800 border border-slate-100 shadow-sm">
+                            {s}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <button className="mt-8 w-full py-3 bg-slate-50 text-primary font-bold text-sm rounded-xl hover:bg-primary hover:text-white transition-all">
+                      Contact Expert
+                    </button>
+                  </div>
+                </motion.div>
+              ))}
             </div>
-          </motion.div>
-        ))}
+          ))}
+        </motion.div>
+      </div>
+
+      <div className="flex justify-center gap-2 pt-4">
+         {Array.from({ length: totalPages }).map((_, i) => (
+           <button 
+             key={i}
+             onClick={() => setPage(i)}
+             className={`h-1.5 rounded-full transition-all duration-300 ${page === i ? "bg-primary w-8" : "bg-slate-200 w-2.5"}`}
+             aria-label={`Go to slide ${i + 1}`}
+           />
+         ))}
       </div>
     </div>
   );
